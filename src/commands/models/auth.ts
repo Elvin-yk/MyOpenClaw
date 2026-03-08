@@ -316,8 +316,11 @@ async function runBuiltInOpenAICodexLogin(params: {
     throw new Error("OpenAI Codex OAuth did not return credentials.");
   }
 
+  const accountId =
+    typeof creds.accountId === "string" && creds.accountId.trim() ? creds.accountId.trim() : "";
   const profileId = await writeOAuthCredentials("openai-codex", creds, params.agentDir, {
     syncSiblingAgents: true,
+    profileId: accountId ? `openai-codex:account:${accountId}` : undefined,
   });
   await updateConfig((cfg) => {
     let next = applyAuthProfileConfig(cfg, {
