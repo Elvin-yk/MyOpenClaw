@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NON_ENV_SECRETREF_MARKER } from "../agents/model-auth-markers.js";
-import { resolveProviderAuths } from "./provider-usage.auth.js";
+import { resolveProviderAuths, resolveProviderAuthsByProfile } from "./provider-usage.auth.js";
 
 describe("resolveProviderAuths key normalization", () => {
   let suiteRoot = "";
@@ -440,6 +440,55 @@ describe("resolveProviderAuths key normalization", () => {
         providers: ["anthropic"],
       });
       expect(auths).toEqual([{ provider: "anthropic", token: "token-1" }]);
+    }, {});
+  });
+
+  it("returns all ordered oauth profiles for per-profile usage lookups", async () => {
+    await withSuiteHome(async (home) => {
+      await writeAuthProfiles(home, {
+        "openai-codex:account:one": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "codex-token-1",
+          refresh: "codex-refresh-1",
+          expires: Date.now() + 60_000,
+          email: "one@example.com",
+          accountId: "account-one",
+        },
+        "openai-codex:account:two": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "codex-token-2",
+          refresh: "codex-refresh-2",
+          expires: Date.now() + 60_000,
+          email: "two@example.com",
+          accountId: "account-two",
+        },
+      });
+      await writeProfileOrder(home, "openai-codex", [
+        "openai-codex:account:two",
+        "openai-codex:account:one",
+      ]);
+
+      const auths = await resolveProviderAuthsByProfile({
+        providers: ["openai-codex"],
+      });
+      expect(auths).toEqual([
+        {
+          provider: "openai-codex",
+          token: "codex-token-2",
+          accountId: "account-two",
+          profileId: "openai-codex:account:two",
+          label: "openai-codex:account:two (two@example.com)",
+        },
+        {
+          provider: "openai-codex",
+          token: "codex-token-1",
+          accountId: "account-one",
+          profileId: "openai-codex:account:one",
+          label: "openai-codex:account:one (one@example.com)",
+        },
+      ]);
     }, {});
   });
 

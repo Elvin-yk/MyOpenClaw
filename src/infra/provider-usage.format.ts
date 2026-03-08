@@ -36,7 +36,7 @@ function formatResetRemaining(targetMs?: number, now?: number): string | null {
 function formatWindowShort(window: UsageWindow, now?: number): string {
   const remaining = clampPercent(100 - window.usedPercent);
   const reset = formatResetRemaining(window.resetAt, now);
-  const resetSuffix = reset ? ` ⏱${reset}` : "";
+  const resetSuffix = reset ? ` reset ${reset}` : "";
   return `${remaining.toFixed(0)}% left (${window.label}${resetSuffix})`;
 }
 
@@ -60,7 +60,7 @@ export function formatUsageWindowSummary(
   const parts = windows.map((window) => {
     const remaining = clampPercent(100 - window.usedPercent);
     const reset = includeResets ? formatResetRemaining(window.resetAt, now) : null;
-    const resetSuffix = reset ? ` ⏱${reset}` : "";
+    const resetSuffix = reset ? ` reset ${reset}` : "";
     return `${window.label} ${remaining.toFixed(0)}% left${resetSuffix}`;
   });
   return parts.join(" · ");

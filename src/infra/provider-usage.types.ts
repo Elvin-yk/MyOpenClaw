@@ -10,6 +10,8 @@ export type ProviderUsageSnapshot = {
   windows: UsageWindow[];
   plan?: string;
   error?: string;
+  profileId?: string;
+  label?: string;
 };
 
 export type UsageSummary = {
