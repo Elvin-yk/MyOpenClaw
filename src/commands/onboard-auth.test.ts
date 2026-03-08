@@ -226,6 +226,36 @@ describe("writeOAuthCredentials", () => {
     await expect(fs.readFile(authProfilePathFor(mainAgentDir), "utf8")).rejects.toThrow();
   });
 
+  it("uses an explicit OAuth profileId when provided", async () => {
+    const env = await setupAuthTestEnv("openclaw-oauth-profileid-");
+    lifecycle.setStateDir(env.stateDir);
+
+    const creds = {
+      refresh: "refresh-profileid",
+      access: "access-profileid",
+      expires: Date.now() + 60_000,
+      email: "user@example.com",
+      accountId: "workspace-123",
+    } satisfies OAuthCredentials;
+
+    await writeOAuthCredentials("openai-codex", creds, env.agentDir, {
+      profileId: "openai-codex:account:workspace-123",
+    });
+
+    const parsed = await readAuthProfilesForAgent<{
+      profiles?: Record<string, OAuthCredentials & { type?: string }>;
+    }>(env.agentDir);
+    expect(parsed.profiles?.["openai-codex:account:workspace-123"]).toMatchObject({
+      refresh: "refresh-profileid",
+      access: "access-profileid",
+      type: "oauth",
+      email: "user@example.com",
+      accountId: "workspace-123",
+    });
+    expect(parsed.profiles?.["openai-codex:user@example.com"]).toBeUndefined();
+    expect(parsed.profiles?.["openai-codex:default"]).toBeUndefined();
+  });
+
   it("syncs siblings from explicit agentDir outside OPENCLAW_STATE_DIR", async () => {
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-oauth-external-"));
     process.env.OPENCLAW_STATE_DIR = tempStateDir;
