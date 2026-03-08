@@ -207,9 +207,6 @@ export async function resolveProviderAuthsByProfile(params: {
   const auths: ProviderAuth[] = [];
 
   for (const provider of params.providers) {
-    if (!resolveOAuthProviders(params.agentDir).includes(provider)) {
-      continue;
-    }
     const order = dedupeProfileIds(
       resolveAuthProfileOrder({
         cfg,
