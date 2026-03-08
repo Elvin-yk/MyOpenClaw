@@ -492,6 +492,33 @@ describe("resolveProviderAuths key normalization", () => {
     }, {});
   });
 
+  it("includes token-backed non-oauth providers in per-profile usage lookups", async () => {
+    await withSuiteHome(async (home) => {
+      await writeAuthProfiles(home, {
+        "minimax:token:primary": {
+          type: "token",
+          provider: "minimax",
+          token: "minimax-token-1",
+        },
+      });
+      await writeProfileOrder(home, "minimax", ["minimax:token:primary"]);
+
+      const auths = await resolveProviderAuthsByProfile({
+        providers: ["minimax"],
+      });
+
+      expect(auths).toEqual([
+        {
+          provider: "minimax",
+          token: "minimax-token-1",
+          accountId: undefined,
+          profileId: "minimax:token:primary",
+          label: "minimax:token:primary",
+        },
+      ]);
+    }, {});
+  });
+
   it("ignores marker-backed config keys for provider usage auth resolution", async () => {
     const auths = await resolveMinimaxAuthFromConfiguredKey(NON_ENV_SECRETREF_MARKER);
     expect(auths).toEqual([]);
