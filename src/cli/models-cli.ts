@@ -9,6 +9,12 @@ import {
   modelsAuthOrderClearCommand,
   modelsAuthOrderGetCommand,
   modelsAuthOrderSetCommand,
+  modelsAuthPoolActivateCommand,
+  modelsAuthPoolAddCommand,
+  modelsAuthPoolAutoCommand,
+  modelsAuthPoolListCommand,
+  modelsAuthPoolRemoveCommand,
+  modelsAuthPoolStatusCommand,
   modelsAuthPasteTokenCommand,
   modelsAuthSetupTokenCommand,
   modelsFallbacksAddCommand,
@@ -435,6 +441,142 @@ export function registerModelsCli(program: Command) {
           {
             provider: opts.provider as string,
             agent,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  const pool = auth.command("pool").description("Manage pooled OAuth auth profiles");
+
+  pool
+    .command("add")
+    .description("Authenticate openai-codex and add/update it in the auth pool")
+    .option("--provider <id>", "Provider id (default: openai-codex)")
+    .option("--profile-id <id>", "Optional target auth profile id")
+    .option("--label <label>", "Optional label for this OAuth/workspace")
+    .option("--activate", "Set this profile as the active manual selection", false)
+    .option("--set-default", "Apply the provider's default model recommendation", false)
+    .option("--timeout <ms>", "Quota fetch timeout in ms", "10000")
+    .action(async (opts) => {
+      await runModelsCommand(async () => {
+        await modelsAuthPoolAddCommand(
+          {
+            provider: opts.provider as string | undefined,
+            profileId: opts.profileId as string | undefined,
+            label: opts.label as string | undefined,
+            activate: Boolean(opts.activate),
+            setDefault: Boolean(opts.setDefault),
+            timeout: opts.timeout as string | undefined,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  pool
+    .command("list")
+    .description("List pooled openai-codex auth profiles")
+    .option("--provider <id>", "Provider id (default: openai-codex)")
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .option("--json", "Output JSON", false)
+    .action(async (opts, command) => {
+      const agent =
+        resolveOptionFromCommand<string>(command, "agent") ?? (opts.agent as string | undefined);
+      await runModelsCommand(async () => {
+        await modelsAuthPoolListCommand(
+          {
+            provider: opts.provider as string | undefined,
+            agent,
+            json: Boolean(opts.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  pool
+    .command("status")
+    .description("Refresh and show quota status for pooled openai-codex auth profiles")
+    .option("--provider <id>", "Provider id (default: openai-codex)")
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .option("--profile-id <id>", "Only check a specific pool profile id")
+    .option("--cached", "Show cached quota status without refreshing", false)
+    .option("--timeout <ms>", "Quota fetch timeout in ms", "10000")
+    .option("--json", "Output JSON", false)
+    .action(async (opts, command) => {
+      const agent =
+        resolveOptionFromCommand<string>(command, "agent") ?? (opts.agent as string | undefined);
+      await runModelsCommand(async () => {
+        await modelsAuthPoolStatusCommand(
+          {
+            provider: opts.provider as string | undefined,
+            agent,
+            profileId: opts.profileId as string | undefined,
+            cached: Boolean(opts.cached),
+            timeout: opts.timeout as string | undefined,
+            json: Boolean(opts.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  pool
+    .command("activate")
+    .description("Switch the auth pool to a specific profile in manual mode")
+    .option("--provider <id>", "Provider id (default: openai-codex)")
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .argument("<profileId>", "Pool profile id")
+    .action(async (profileId: string, opts, command) => {
+      const agent =
+        resolveOptionFromCommand<string>(command, "agent") ?? (opts.agent as string | undefined);
+      await runModelsCommand(async () => {
+        await modelsAuthPoolActivateCommand(
+          {
+            provider: opts.provider as string | undefined,
+            agent,
+            profileId,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  pool
+    .command("auto")
+    .description("Return the auth pool to automatic quota-based selection")
+    .option("--provider <id>", "Provider id (default: openai-codex)")
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .action(async (opts, command) => {
+      const agent =
+        resolveOptionFromCommand<string>(command, "agent") ?? (opts.agent as string | undefined);
+      await runModelsCommand(async () => {
+        await modelsAuthPoolAutoCommand(
+          {
+            provider: opts.provider as string | undefined,
+            agent,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  pool
+    .command("remove")
+    .description("Remove a pooled auth profile and delete its stored OAuth credentials")
+    .option("--provider <id>", "Provider id (default: openai-codex)")
+    .option("--agent <id>", "Agent id (default: configured default agent)")
+    .argument("<profileId>", "Pool profile id")
+    .action(async (profileId: string, opts, command) => {
+      const agent =
+        resolveOptionFromCommand<string>(command, "agent") ?? (opts.agent as string | undefined);
+      await runModelsCommand(async () => {
+        await modelsAuthPoolRemoveCommand(
+          {
+            provider: opts.provider as string | undefined,
+            agent,
+            profileId,
           },
           defaultRuntime,
         );

@@ -11,6 +11,14 @@ export {
   modelsAuthSetupTokenCommand,
 } from "./models/auth.js";
 export {
+  modelsAuthPoolActivateCommand,
+  modelsAuthPoolAddCommand,
+  modelsAuthPoolAutoCommand,
+  modelsAuthPoolListCommand,
+  modelsAuthPoolRemoveCommand,
+  modelsAuthPoolStatusCommand,
+} from "./models/auth-pool.js";
+export {
   modelsAuthOrderClearCommand,
   modelsAuthOrderGetCommand,
   modelsAuthOrderSetCommand,

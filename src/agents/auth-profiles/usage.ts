@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import { normalizeProviderId } from "../model-selection.js";
+import { syncProviderPoolActiveProfile } from "./pool.js";
 import { saveAuthProfileStore, updateAuthProfileStoreWithLock } from "./store.js";
 import type { AuthProfileFailureReason, AuthProfileStore, ProfileUsageStats } from "./types.js";
 
@@ -256,6 +257,10 @@ export async function markAuthProfileUsed(params: {
   });
   if (updated) {
     store.usageStats = updated.usageStats;
+    const providerId = store.profiles[profileId]?.provider;
+    if (providerId) {
+      syncProviderPoolActiveProfile(providerId, profileId);
+    }
     return;
   }
   if (!store.profiles[profileId]) {
@@ -266,6 +271,10 @@ export async function markAuthProfileUsed(params: {
     resetUsageStats(existing, { lastUsed: Date.now() }),
   );
   saveAuthProfileStore(store, agentDir);
+  const providerId = store.profiles[profileId]?.provider;
+  if (providerId) {
+    syncProviderPoolActiveProfile(providerId, profileId);
+  }
 }
 
 export function calculateAuthProfileCooldownMs(errorCount: number): number {

@@ -1,6 +1,7 @@
 import { normalizeStringEntries } from "../../shared/string-normalization.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { normalizeProviderId, normalizeProviderIdForAuth } from "../model-selection.js";
+import { syncProviderPoolActiveProfile } from "./pool.js";
 import {
   ensureAuthProfileStore,
   saveAuthProfileStore,
@@ -104,6 +105,7 @@ export async function markAuthProfileGood(params: {
   });
   if (updated) {
     store.lastGood = updated.lastGood;
+    syncProviderPoolActiveProfile(provider, profileId);
     return;
   }
   const profile = store.profiles[profileId];
@@ -112,4 +114,5 @@ export async function markAuthProfileGood(params: {
   }
   store.lastGood = { ...store.lastGood, [provider]: profileId };
   saveAuthProfileStore(store, agentDir);
+  syncProviderPoolActiveProfile(provider, profileId);
 }

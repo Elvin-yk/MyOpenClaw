@@ -8,6 +8,7 @@ import {
   evaluateStoredCredentialEligibility,
   type AuthCredentialReasonCode,
 } from "./credential-state.js";
+import { orderProfilesByCodexPool } from "./pool.js";
 import { dedupeProfileIds, listProfilesForProvider } from "./profiles.js";
 import type { AuthProfileStore } from "./types.js";
 import {
@@ -115,30 +116,20 @@ export function resolveAuthProfileOrder(params: {
 
   const deduped = dedupeProfileIds(filtered);
 
+  const poolOrdered = providerKey === "openai-codex" ? orderProfilesByCodexPool(deduped, store) : null;
+  if (poolOrdered !== null) {
+    const ordered = applyCooldownAwareOrder(poolOrdered, store, now);
+    if (preferredProfile && ordered.includes(preferredProfile)) {
+      return [preferredProfile, ...ordered.filter((entry) => entry !== preferredProfile)];
+    }
+    return ordered;
+  }
+
   // If user specified explicit order (store override or config), respect it
   // exactly, but still apply cooldown sorting to avoid repeatedly selecting
   // known-bad/rate-limited keys as the first candidate.
   if (explicitOrder && explicitOrder.length > 0) {
-    // ...but still respect cooldown tracking to avoid repeatedly selecting a
-    // known-bad/rate-limited key as the first candidate.
-    const available: string[] = [];
-    const inCooldown: Array<{ profileId: string; cooldownUntil: number }> = [];
-
-    for (const profileId of deduped) {
-      if (isProfileInCooldown(store, profileId)) {
-        const cooldownUntil =
-          resolveProfileUnusableUntil(store.usageStats?.[profileId] ?? {}) ?? now;
-        inCooldown.push({ profileId, cooldownUntil });
-      } else {
-        available.push(profileId);
-      }
-    }
-
-    const cooldownSorted = inCooldown
-      .toSorted((a, b) => a.cooldownUntil - b.cooldownUntil)
-      .map((entry) => entry.profileId);
-
-    const ordered = [...available, ...cooldownSorted];
+    const ordered = applyCooldownAwareOrder(deduped, store, now);
 
     // Still put preferredProfile first if specified
     if (preferredProfile && ordered.includes(preferredProfile)) {
@@ -157,6 +148,24 @@ export function resolveAuthProfileOrder(params: {
   }
 
   return sorted;
+}
+
+function applyCooldownAwareOrder(order: string[], store: AuthProfileStore, now: number): string[] {
+  const available: string[] = [];
+  const inCooldown: Array<{ profileId: string; cooldownUntil: number }> = [];
+  for (const profileId of order) {
+    if (isProfileInCooldown(store, profileId)) {
+      const cooldownUntil = resolveProfileUnusableUntil(store.usageStats?.[profileId] ?? {}) ?? now;
+      inCooldown.push({ profileId, cooldownUntil });
+    } else {
+      available.push(profileId);
+    }
+  }
+
+  const cooldownSorted = inCooldown
+    .toSorted((a, b) => a.cooldownUntil - b.cooldownUntil)
+    .map((entry) => entry.profileId);
+  return [...available, ...cooldownSorted];
 }
 
 function orderProfilesByMode(order: string[], store: AuthProfileStore): string[] {
