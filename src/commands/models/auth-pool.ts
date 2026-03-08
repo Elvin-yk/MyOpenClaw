@@ -4,12 +4,19 @@ import path from "node:path";
 import { resolveAgentDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { formatRemainingShort } from "../../agents/auth-health.js";
 import { ensureAuthProfileStore, listProfilesForProvider, setAuthProfileOrder } from "../../agents/auth-profiles.js";
+import {
+  AUTH_POOL_FILENAME,
+  CODEX_POOL_PROVIDER,
+  isManagedCodexPoolProfileId,
+} from "../../agents/auth-profiles/pool.js";
 import { updateAuthProfileStoreWithLock } from "../../agents/auth-profiles/store.js";
 import type { AuthProfileCredential, OAuthCredential } from "../../agents/auth-profiles/types.js";
 import { normalizeProviderId } from "../../agents/model-selection.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { logConfigUpdated } from "../../config/logging.js";
 import { CONFIG_PATH } from "../../config/paths.js";
+import { fetchCodexUsage } from "../../infra/provider-usage.fetch.codex.js";
+import { clampPercent } from "../../infra/provider-usage.shared.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
 import { applyAuthProfileConfig } from "../onboard-auth.js";
@@ -22,9 +29,7 @@ import {
 import { loginOpenAICodexOAuth } from "../openai-codex-oauth.js";
 import { loadValidConfigOrThrow, resolveKnownAgentId, updateConfig } from "./shared.js";
 
-const AUTH_POOL_FILENAME = "auth-pools.json";
 const AUTH_POOL_VERSION = 1;
-const CODEX_POOL_PROVIDER = "openai-codex";
 
 type PoolStatusWindow = {
   label: string;
@@ -378,6 +383,19 @@ function resolvePoolProfileIds(
   return base;
 }
 
+function requireVisiblePoolEntry(params: {
+  providerPool: ProviderPool;
+  profileId: string;
+  agentId: string;
+  store: ReturnType<typeof ensureAuthProfileStore>;
+}): PoolEntry {
+  const entry = params.providerPool.entries[params.profileId];
+  if (!entry || !isEntryVisibleForAgent(entry, params.profileId, params.agentId, params.store)) {
+    throw new Error(`Auth pool profile "${params.profileId}" not found.`);
+  }
+  return entry;
+}
+
 async function syncPoolOrder(
   agentDir: string,
   agentId: string,
@@ -450,6 +468,9 @@ function syncCodexPoolEntriesFromStore(params: {
     if (!credential || credential.type !== "oauth") {
       continue;
     }
+    if (!providerPool.entries[profileId] && !isManagedCodexPoolProfileId(profileId)) {
+      continue;
+    }
     const existing = providerPool.entries[profileId] ?? {};
     const metadata = extractCodexCredentialMetadata(credential as OAuthCredential);
     const emailFromConfig = cfg.auth?.profiles?.[profileId]?.email?.trim();
@@ -517,24 +538,6 @@ function resolveGeneratedCodexPoolProfileId(accountId: string | null): string {
   return `openai-codex:pool:${sanitizeProfileIdPart(accountId ?? crypto.randomUUID().slice(0, 8))}`;
 }
 
-function clampPercent(value: unknown): number {
-  const num = typeof value === "number" ? value : Number.parseFloat(String(value ?? "0"));
-  if (!Number.isFinite(num)) {
-    return 0;
-  }
-  return Math.max(0, Math.min(100, num));
-}
-
-function resolveSecondaryWindowLabel(windowHours: number): string {
-  if (windowHours >= 24 * 6 && windowHours <= 24 * 8) {
-    return "Week";
-  }
-  if (windowHours === 24) {
-    return "Day";
-  }
-  return `${windowHours}h`;
-}
-
 async function fetchCodexPoolStatus(
   credential: AuthProfileCredential | undefined,
   timeoutMs: number,
@@ -547,76 +550,29 @@ async function fetchCodexPoolStatus(
       error: "missing OAuth access token",
     };
   }
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${credential.access}`,
-    "User-Agent": "CodexBar",
-    Accept: "application/json",
-  };
-  if (credential.accountId?.trim()) {
-    headers["ChatGPT-Account-Id"] = credential.accountId.trim();
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
+    const snapshot = await fetchCodexUsage(
+      credential.access,
+      credential.accountId?.trim() || undefined,
+      timeoutMs,
+      fetch,
+    );
+    if (snapshot.error) {
       return {
         ok: false,
         fetchedAt,
-        status: response.status,
-        error: `HTTP ${response.status}`,
+        error: snapshot.error,
       };
-    }
-    const data = (await response.json()) as {
-      plan_type?: string;
-      credits?: { balance?: number | string };
-      rate_limit?: {
-        primary_window?: { limit_window_seconds?: number; used_percent?: number; reset_at?: number };
-        secondary_window?: {
-          limit_window_seconds?: number;
-          used_percent?: number;
-          reset_at?: number;
-        };
-      };
-    };
-    const windows: PoolStatusWindow[] = [];
-    if (data.rate_limit?.primary_window) {
-      const primary = data.rate_limit.primary_window;
-      const windowHours = Math.round((primary.limit_window_seconds || 10_800) / 3600);
-      windows.push({
-        label: `${windowHours}h`,
-        usedPercent: clampPercent(primary.used_percent || 0),
-        resetAt: primary.reset_at ? primary.reset_at * 1000 : undefined,
-      });
-    }
-    if (data.rate_limit?.secondary_window) {
-      const secondary = data.rate_limit.secondary_window;
-      const windowHours = Math.round((secondary.limit_window_seconds || 86_400) / 3600);
-      windows.push({
-        label: resolveSecondaryWindowLabel(windowHours),
-        usedPercent: clampPercent(secondary.used_percent || 0),
-        resetAt: secondary.reset_at ? secondary.reset_at * 1000 : undefined,
-      });
-    }
-
-    let plan = data.plan_type;
-    if (data.credits?.balance !== undefined && data.credits.balance !== null) {
-      const balance =
-        typeof data.credits.balance === "number"
-          ? data.credits.balance
-          : Number.parseFloat(String(data.credits.balance ?? "0")) || 0;
-      plan = plan ? `${plan} ($${balance.toFixed(2)})` : `$${balance.toFixed(2)}`;
     }
     return {
       ok: true,
       fetchedAt,
-      plan: plan ?? null,
-      windows,
+      plan: snapshot.plan ?? null,
+      windows: snapshot.windows.map((window) => ({
+        label: window.label,
+        usedPercent: window.usedPercent,
+        resetAt: window.resetAt,
+      })),
     };
   } catch (error) {
     return {
@@ -624,8 +580,6 @@ async function fetchCodexPoolStatus(
       fetchedAt,
       error: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -652,6 +606,31 @@ function describePoolStatus(entry: PoolEntry | undefined): string {
     .map((window) => describeStatusWindow(window))
     .filter((window): window is string => Boolean(window));
   return windows.length > 0 ? windows.join(" | ") : "quota status available";
+}
+
+function removeProfileFromAuthStore(
+  store: ReturnType<typeof ensureAuthProfileStore>,
+  profileId: string,
+  provider: string,
+): boolean {
+  if (!store.profiles[profileId] && !store.usageStats?.[profileId]) {
+    return false;
+  }
+  delete store.profiles[profileId];
+  if (store.usageStats) {
+    delete store.usageStats[profileId];
+    if (Object.keys(store.usageStats).length === 0) {
+      store.usageStats = undefined;
+    }
+  }
+  const providerKey = normalizeProviderId(provider);
+  if (store.lastGood && providerKey in store.lastGood && store.lastGood[providerKey] === profileId) {
+    delete store.lastGood[providerKey];
+  }
+  if (store.lastGood && Object.keys(store.lastGood).length === 0) {
+    store.lastGood = undefined;
+  }
+  return true;
 }
 
 function credentialMode(credential: AuthProfileCredential): "api_key" | "oauth" | "token" {
@@ -820,29 +799,7 @@ export async function modelsAuthPoolAddCommand(
   if (movedFromProfileId && movedFromProfileId !== targetProfileId) {
     await updateAuthProfileStoreWithLock({
       agentDir,
-      updater: (store) => {
-        let changed = false;
-        if (store.profiles?.[movedFromProfileId]) {
-          delete store.profiles[movedFromProfileId];
-          changed = true;
-        }
-        if (store.usageStats?.[movedFromProfileId]) {
-          delete store.usageStats[movedFromProfileId];
-          if (Object.keys(store.usageStats).length === 0) {
-            store.usageStats = undefined;
-          }
-          changed = true;
-        }
-        const providerKey = normalizeProviderId(provider);
-        if (store.lastGood && providerKey in store.lastGood && store.lastGood[providerKey] === movedFromProfileId) {
-          delete store.lastGood[providerKey];
-          if (Object.keys(store.lastGood).length === 0) {
-            store.lastGood = undefined;
-          }
-          changed = true;
-        }
-        return changed;
-      },
+      updater: (store) => removeProfileFromAuthStore(store, movedFromProfileId, provider),
     });
   }
 
@@ -1048,17 +1005,25 @@ export async function modelsAuthPoolStatusCommand(
   }
 
   const timeoutMs = Number.parseInt(String(opts.timeout ?? "10000"), 10) || 10_000;
-  for (const profileId of targetProfileIds) {
-    if (!providerPool.entries[profileId]) {
-      throw new Error(`Auth pool profile "${profileId}" not found.`);
-    }
+  const profileCredentials = targetProfileIds.map((profileId) => {
+    requireVisiblePoolEntry({ providerPool, profileId, agentId, store });
     const credential = store.profiles[profileId];
     if (!credential) {
       throw new Error(`Auth profile "${profileId}" not found in ${agentDir}.`);
     }
-    if (!opts.cached) {
-      providerPool.entries[profileId].lastStatus = await fetchCodexPoolStatus(credential, timeoutMs);
-      providerPool.entries[profileId].updatedAt = new Date().toISOString();
+    return { profileId, credential };
+  });
+  if (!opts.cached) {
+    const refreshed = await Promise.all(
+      profileCredentials.map(async ({ profileId, credential }) => ({
+        profileId,
+        status: await fetchCodexPoolStatus(credential, timeoutMs),
+      })),
+    );
+    const updatedAt = new Date().toISOString();
+    for (const { profileId, status } of refreshed) {
+      providerPool.entries[profileId].lastStatus = status;
+      providerPool.entries[profileId].updatedAt = updatedAt;
     }
   }
 
@@ -1121,12 +1086,7 @@ export async function modelsAuthPoolActivateCommand(
   if (!profileId) {
     throw new Error("Missing profile id.");
   }
-  if (
-    !providerPool.entries[profileId] ||
-    !isEntryVisibleForAgent(providerPool.entries[profileId], profileId, agentId, store)
-  ) {
-    throw new Error(`Auth pool profile "${profileId}" not found.`);
-  }
+  requireVisiblePoolEntry({ providerPool, profileId, agentId, store });
   providerPool.mode = "manual";
   providerPool.activeProfileId = profileId;
   await saveAuthPools(pools);
@@ -1168,40 +1128,16 @@ export async function modelsAuthPoolRemoveCommand(
   if (!profileId) {
     throw new Error("Missing profile id.");
   }
-  if (
-    !providerPool.entries[profileId] ||
-    !isEntryVisibleForAgent(providerPool.entries[profileId], profileId, agentId, store)
-  ) {
-    throw new Error(`Auth pool profile "${profileId}" not found.`);
-  }
+  requireVisiblePoolEntry({ providerPool, profileId, agentId, store });
 
   delete providerPool.entries[profileId];
   if (providerPool.activeProfileId === profileId) {
-    providerPool.activeProfileId = resolvePoolProfileIds(providerPool, agentId)[0];
+    providerPool.activeProfileId = resolvePoolProfileIds(providerPool, agentId, store)[0];
   }
 
   await updateAuthProfileStoreWithLock({
     agentDir,
-    updater: (store) => {
-      if (!store.profiles[profileId] && !store.usageStats?.[profileId]) {
-        return false;
-      }
-      delete store.profiles[profileId];
-      if (store.usageStats) {
-        delete store.usageStats[profileId];
-        if (Object.keys(store.usageStats).length === 0) {
-          store.usageStats = undefined;
-        }
-      }
-      const providerKey = normalizeProviderId(provider);
-      if (store.lastGood && providerKey in store.lastGood && store.lastGood[providerKey] === profileId) {
-        delete store.lastGood[providerKey];
-      }
-      if (store.lastGood && Object.keys(store.lastGood).length === 0) {
-        store.lastGood = undefined;
-      }
-      return true;
-    },
+    updater: (store) => removeProfileFromAuthStore(store, profileId, provider),
   });
 
   await updateConfig((cfg) => removeAuthProfileConfigEntry(cfg, profileId));

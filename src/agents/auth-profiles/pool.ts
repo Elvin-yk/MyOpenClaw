@@ -6,6 +6,7 @@ import type { AuthProfileStore } from "./types.js";
 
 export const AUTH_POOL_FILENAME = "auth-pools.json";
 export const CODEX_POOL_PROVIDER = "openai-codex";
+export const CODEX_POOL_PROFILE_PREFIX = `${CODEX_POOL_PROVIDER}:pool:`;
 
 export type CodexPoolStatusWindow = {
   label?: string;
@@ -33,24 +34,61 @@ type AuthPoolsFile = {
   providers?: Record<string, ProviderAuthPool>;
 };
 
-function resolveAuthPoolPath(): string {
+let cachedPoolPath: string | null = null;
+let cachedPoolMtimeMs: number | null = null;
+let cachedPoolSize: number | null = null;
+let cachedPools: AuthPoolsFile | null = null;
+
+export function resolveAuthPoolPath(): string {
   return path.join(path.dirname(CONFIG_PATH), AUTH_POOL_FILENAME);
 }
 
 function loadAuthPoolsSync(): AuthPoolsFile | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(resolveAuthPoolPath(), "utf8")) as unknown;
+    const filePath = resolveAuthPoolPath();
+    const stat = fs.statSync(filePath);
+    if (
+      cachedPools &&
+      cachedPoolPath === filePath &&
+      cachedPoolMtimeMs === stat.mtimeMs &&
+      cachedPoolSize === stat.size
+    ) {
+      return cachedPools;
+    }
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
-    return parsed as AuthPoolsFile;
+    cachedPoolPath = filePath;
+    cachedPoolMtimeMs = stat.mtimeMs;
+    cachedPoolSize = stat.size;
+    cachedPools = parsed as AuthPoolsFile;
+    return cachedPools;
   } catch {
     return null;
   }
 }
 
 function saveAuthPoolsSync(pools: AuthPoolsFile): void {
-  fs.writeFileSync(resolveAuthPoolPath(), `${JSON.stringify(pools, null, 2)}\n`, "utf8");
+  const filePath = resolveAuthPoolPath();
+  const tmpPath = path.join(
+    path.dirname(filePath),
+    `${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  fs.writeFileSync(tmpPath, `${JSON.stringify(pools, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, filePath);
+  try {
+    const stat = fs.statSync(filePath);
+    cachedPoolPath = filePath;
+    cachedPoolMtimeMs = stat.mtimeMs;
+    cachedPoolSize = stat.size;
+    cachedPools = pools;
+  } catch {
+    cachedPoolPath = null;
+    cachedPoolMtimeMs = null;
+    cachedPoolSize = null;
+    cachedPools = null;
+  }
 }
 
 function clampPoolPercent(value: unknown): number {
@@ -130,6 +168,10 @@ function isCodexPoolEntryQuotaExhausted(entry: AuthPoolEntry | undefined): boole
   return shortRemaining === 0 || longRemaining === 0;
 }
 
+export function isManagedCodexPoolProfileId(profileId: string): boolean {
+  return profileId.startsWith(CODEX_POOL_PROFILE_PREFIX);
+}
+
 export function orderProfilesByCodexPool(
   order: string[],
   store: AuthProfileStore,
@@ -198,12 +240,14 @@ export function orderProfilesByCodexPool(
 
 export function syncProviderPoolActiveProfile(provider: string, profileId: string): void {
   try {
+    if (normalizeProviderId(provider) !== CODEX_POOL_PROVIDER) {
+      return;
+    }
     const pools = loadAuthPoolsSync();
     if (!pools || typeof pools !== "object" || Array.isArray(pools)) {
       return;
     }
-    const providerKey = normalizeProviderId(provider);
-    const providerPool = pools.providers?.[providerKey];
+    const providerPool = pools.providers?.[CODEX_POOL_PROVIDER];
     if (!providerPool || typeof providerPool !== "object" || Array.isArray(providerPool)) {
       return;
     }

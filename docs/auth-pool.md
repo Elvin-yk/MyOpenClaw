@@ -16,6 +16,7 @@
 - Pool metadata is stored in `~/.openclaw/auth-pools.json`.
 - OAuth credentials remain in `~/.openclaw/agents/<agentId>/agent/auth-profiles.json`.
 - Pool entry visibility and cleanup are agent-scoped to avoid cross-agent deletion.
+- Plain `openclaw models auth login` credentials are not auto-imported into the pool. Pool membership is managed by `pool add` / `pool remove`.
 - `pool add` runs OAuth login only, then adds/updates one pooled profile.
 - If an account is already in the pool, `pool add` reuses that profile and updates workspace label.
 - Auto ranking is:
