@@ -48,6 +48,7 @@ type PoolStatus =
 
 type PoolEntry = {
   provider?: string;
+  agentId?: string;
   enabled?: boolean;
   label?: string;
   email?: string | null;
@@ -343,9 +344,26 @@ function ensureProviderPool(pools: AuthPools, provider: string): ProviderPool {
   return created;
 }
 
-function resolvePoolProfileIds(providerPool: ProviderPool): string[] {
+function isEntryVisibleForAgent(
+  entry: PoolEntry | undefined,
+  profileId: string,
+  agentId: string,
+  store?: ReturnType<typeof ensureAuthProfileStore>,
+): boolean {
+  const scopedAgentId = entry?.agentId?.trim();
+  if (scopedAgentId) {
+    return scopedAgentId === agentId;
+  }
+  return store ? Boolean(store.profiles[profileId]) : true;
+}
+
+function resolvePoolProfileIds(
+  providerPool: ProviderPool,
+  agentId: string,
+  store?: ReturnType<typeof ensureAuthProfileStore>,
+): string[] {
   const base = Object.entries(providerPool.entries ?? {})
-    .filter(([, entry]) => entry?.enabled !== false)
+    .filter(([profileId, entry]) => entry?.enabled !== false && isEntryVisibleForAgent(entry, profileId, agentId, store))
     .map(([profileId]) => profileId);
   if (
     providerPool.mode === "manual" &&
@@ -362,12 +380,15 @@ function resolvePoolProfileIds(providerPool: ProviderPool): string[] {
 
 async function syncPoolOrder(
   agentDir: string,
+  agentId: string,
   provider: string,
   providerPool: ProviderPool,
 ): Promise<void> {
   const store = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
   const available = new Set(listProfilesForProvider(store, provider));
-  const order = resolvePoolProfileIds(providerPool).filter((profileId) => available.has(profileId));
+  const order = resolvePoolProfileIds(providerPool, agentId, store).filter((profileId) =>
+    available.has(profileId),
+  );
   await setAuthProfileOrder({
     agentDir,
     provider,
@@ -398,14 +419,23 @@ async function persistPoolOAuthProfile(
 function syncCodexPoolEntriesFromStore(params: {
   cfg: Awaited<ReturnType<typeof loadValidConfigOrThrow>>;
   store: ReturnType<typeof ensureAuthProfileStore>;
+  agentId: string;
   providerPool: ProviderPool;
 }): boolean {
-  const { cfg, store, providerPool } = params;
+  const { cfg, store, agentId, providerPool } = params;
   let mutated = false;
   const now = new Date().toISOString();
   const known = new Set(listProfilesForProvider(store, CODEX_POOL_PROVIDER));
 
-  for (const [profileId] of Object.entries(providerPool.entries ?? {})) {
+  for (const [profileId, entry] of Object.entries(providerPool.entries ?? {})) {
+    const entryAgentId = entry?.agentId?.trim();
+    if (entryAgentId && entryAgentId !== agentId) {
+      continue;
+    }
+    if (!entryAgentId) {
+      // Legacy unscoped entries are left intact to avoid cross-agent data loss.
+      continue;
+    }
     if (!known.has(profileId)) {
       delete providerPool.entries[profileId];
       if (providerPool.activeProfileId === profileId) {
@@ -426,6 +456,7 @@ function syncCodexPoolEntriesFromStore(params: {
     const next: PoolEntry = {
       ...existing,
       provider: CODEX_POOL_PROVIDER,
+      agentId,
       enabled: existing.enabled !== false,
       accountId: metadata.accountId ?? existing.accountId ?? null,
       email: metadata.email ?? emailFromConfig ?? existing.email ?? null,
@@ -692,9 +723,9 @@ async function resolveCodexPoolContext(opts: PoolProviderTargetOpts): Promise<Po
   const pools = await loadAuthPools();
   const providerPool = ensureProviderPool(pools, provider);
 
-  if (syncCodexPoolEntriesFromStore({ cfg, store, providerPool })) {
+  if (syncCodexPoolEntriesFromStore({ cfg, store, agentId, providerPool })) {
     await saveAuthPools(pools);
-    await syncPoolOrder(agentDir, provider, providerPool);
+    await syncPoolOrder(agentDir, agentId, provider, providerPool);
   }
 
   return {
@@ -860,6 +891,7 @@ export async function modelsAuthPoolAddCommand(
   syncCodexPoolEntriesFromStore({
     cfg: await loadValidConfigOrThrow(),
     store: refreshedStore,
+    agentId: defaultAgentId,
     providerPool,
   });
 
@@ -880,6 +912,7 @@ export async function modelsAuthPoolAddCommand(
       planType: profile.metadata.planType,
       accountId: profile.metadata.accountId,
     });
+    entry.agentId = defaultAgentId;
     entry.enabled = true;
     entry.accountId = profile.metadata.accountId ?? entry.accountId ?? null;
     entry.email = profile.metadata.email ?? entry.email ?? null;
@@ -899,7 +932,7 @@ export async function modelsAuthPoolAddCommand(
   }
 
   await saveAuthPools(pools);
-  await syncPoolOrder(agentDir, provider, providerPool);
+  await syncPoolOrder(agentDir, defaultAgentId, provider, providerPool);
 
   logConfigUpdated(runtime);
   runtime.log(`Pool provider: ${provider}`);
@@ -940,8 +973,10 @@ export async function modelsAuthPoolListCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const { agentId, agentDir, provider, providerPool } = await resolveCodexPoolContext(opts);
-  const entries = Object.entries(providerPool.entries ?? {}).map(([profileId, entry]) => ({
+  const { agentId, agentDir, provider, providerPool, store } = await resolveCodexPoolContext(opts);
+  const entries = Object.entries(providerPool.entries ?? {})
+    .filter(([profileId, entry]) => isEntryVisibleForAgent(entry, profileId, agentId, store))
+    .map(([profileId, entry]) => ({
     profileId,
     label: entry?.label ?? profileId,
     email: entry?.email ?? null,
@@ -950,7 +985,7 @@ export async function modelsAuthPoolListCommand(
     enabled: entry?.enabled !== false,
     active: providerPool.activeProfileId === profileId,
     lastStatus: entry?.lastStatus ?? null,
-  }));
+    }));
 
   if (opts.json) {
     runtime.log(
@@ -1004,8 +1039,8 @@ export async function modelsAuthPoolStatusCommand(
         .split(",")
         .map((entry) => entry.trim())
         .filter(Boolean)
-    : resolvePoolProfileIds(providerPool);
-  const targetProfileIds = requested.length > 0 ? requested : Object.keys(providerPool.entries ?? {});
+    : resolvePoolProfileIds(providerPool, agentId, store);
+  const targetProfileIds = requested.length > 0 ? requested : [];
   if (targetProfileIds.length === 0) {
     throw new Error(
       `No auth pool profiles found. Add one with \`${formatCliCommand("openclaw models auth pool add --provider openai-codex")}\`.`,
@@ -1081,18 +1116,21 @@ export async function modelsAuthPoolActivateCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const { agentId, agentDir, provider, pools, providerPool } = await resolveCodexPoolContext(opts);
+  const { agentId, agentDir, provider, pools, providerPool, store } = await resolveCodexPoolContext(opts);
   const profileId = String(opts.profileId ?? "").trim();
   if (!profileId) {
     throw new Error("Missing profile id.");
   }
-  if (!providerPool.entries[profileId]) {
+  if (
+    !providerPool.entries[profileId] ||
+    !isEntryVisibleForAgent(providerPool.entries[profileId], profileId, agentId, store)
+  ) {
     throw new Error(`Auth pool profile "${profileId}" not found.`);
   }
   providerPool.mode = "manual";
   providerPool.activeProfileId = profileId;
   await saveAuthPools(pools);
-  await syncPoolOrder(agentDir, provider, providerPool);
+  await syncPoolOrder(agentDir, agentId, provider, providerPool);
 
   runtime.log(`Agent: ${agentId}`);
   runtime.log(`Provider: ${provider}`);
@@ -1110,7 +1148,7 @@ export async function modelsAuthPoolAutoCommand(
   const { agentId, agentDir, provider, pools, providerPool } = await resolveCodexPoolContext(opts);
   providerPool.mode = "auto";
   await saveAuthPools(pools);
-  await syncPoolOrder(agentDir, provider, providerPool);
+  await syncPoolOrder(agentDir, agentId, provider, providerPool);
 
   runtime.log(`Agent: ${agentId}`);
   runtime.log(`Provider: ${provider}`);
@@ -1125,18 +1163,21 @@ export async function modelsAuthPoolRemoveCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const { agentId, agentDir, provider, pools, providerPool } = await resolveCodexPoolContext(opts);
+  const { agentId, agentDir, provider, pools, providerPool, store } = await resolveCodexPoolContext(opts);
   const profileId = String(opts.profileId ?? "").trim();
   if (!profileId) {
     throw new Error("Missing profile id.");
   }
-  if (!providerPool.entries[profileId]) {
+  if (
+    !providerPool.entries[profileId] ||
+    !isEntryVisibleForAgent(providerPool.entries[profileId], profileId, agentId, store)
+  ) {
     throw new Error(`Auth pool profile "${profileId}" not found.`);
   }
 
   delete providerPool.entries[profileId];
   if (providerPool.activeProfileId === profileId) {
-    providerPool.activeProfileId = resolvePoolProfileIds(providerPool)[0];
+    providerPool.activeProfileId = resolvePoolProfileIds(providerPool, agentId)[0];
   }
 
   await updateAuthProfileStoreWithLock({
@@ -1165,7 +1206,7 @@ export async function modelsAuthPoolRemoveCommand(
 
   await updateConfig((cfg) => removeAuthProfileConfigEntry(cfg, profileId));
   await saveAuthPools(pools);
-  await syncPoolOrder(agentDir, provider, providerPool);
+  await syncPoolOrder(agentDir, agentId, provider, providerPool);
 
   logConfigUpdated(runtime);
   runtime.log(`Agent: ${agentId}`);

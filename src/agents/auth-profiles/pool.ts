@@ -159,8 +159,11 @@ export function orderProfilesByCodexPool(
     tracked.push(profileId);
   }
 
+  // Keep quota-exhausted entries excluded even when every tracked profile
+  // is depleted. Returning null would fall back to generic ordering and
+  // reintroduce exhausted profiles.
   if (tracked.length === 0) {
-    return null;
+    return [...untracked, ...disabled];
   }
 
   const sortedTracked = tracked.toSorted((a, b) =>
