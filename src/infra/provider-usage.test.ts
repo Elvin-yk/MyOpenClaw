@@ -181,6 +181,101 @@ describe("provider usage loading", () => {
     expect(mockFetch).toHaveBeenCalled();
   });
 
+  it("preserves profile metadata on injected usage auth", async () => {
+    const mockFetch = createProviderUsageFetch(async (url) => {
+      if (url.includes("chatgpt.com/backend-api/wham/usage")) {
+        return makeResponse(200, {
+          rate_limit: {
+            primary_window: {
+              limit_window_seconds: 10800,
+              used_percent: 25,
+              reset_at: 1_767_744_800,
+            },
+          },
+        });
+      }
+      return makeResponse(404, "not found");
+    });
+
+    const summary = await loadUsageWithAuth(
+      [
+        {
+          provider: "openai-codex",
+          token: "token-1",
+          accountId: "account-1",
+          profileId: "openai-codex:account:account-1",
+          label: "openai-codex:account:account-1 (one@example.com)",
+        },
+      ],
+      mockFetch,
+    );
+
+    expect(summary.providers).toEqual([
+      expect.objectContaining({
+        provider: "openai-codex",
+        profileId: "openai-codex:account:account-1",
+        label: "openai-codex:account:account-1 (one@example.com)",
+      }),
+    ]);
+  });
+
+  it("keeps other profile usage snapshots when one request throws", async () => {
+    let callCount = 0;
+    const mockFetch = createProviderUsageFetch(async (url) => {
+      if (!url.includes("chatgpt.com/backend-api/wham/usage")) {
+        return makeResponse(404, "not found");
+      }
+      callCount += 1;
+      if (callCount === 1) {
+        throw new TypeError("fetch failed");
+      }
+      return makeResponse(200, {
+        rate_limit: {
+          primary_window: {
+            limit_window_seconds: 10800,
+            used_percent: 10,
+            reset_at: 1_767_744_800,
+          },
+        },
+      });
+    });
+
+    const summary = await loadUsageWithAuth(
+      [
+        {
+          provider: "openai-codex",
+          token: "token-1",
+          accountId: "account-1",
+          profileId: "openai-codex:account:account-1",
+          label: "openai-codex:account:account-1",
+        },
+        {
+          provider: "openai-codex",
+          token: "token-2",
+          accountId: "account-2",
+          profileId: "openai-codex:account:account-2",
+          label: "openai-codex:account:account-2",
+        },
+      ],
+      mockFetch,
+    );
+
+    expect(summary.providers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "openai-codex",
+          profileId: "openai-codex:account:account-1",
+          error: "fetch failed",
+        }),
+        expect.objectContaining({
+          provider: "openai-codex",
+          profileId: "openai-codex:account:account-2",
+          windows: [expect.objectContaining({ label: "3h", usedPercent: 10 })],
+        }),
+      ]),
+    );
+  });
+
   it("handles nested MiniMax usage payloads", async () => {
     await expectMinimaxUsage(
       {
