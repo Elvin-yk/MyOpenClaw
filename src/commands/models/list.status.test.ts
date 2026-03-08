@@ -318,6 +318,97 @@ describe("modelsStatusCommand auth overview", () => {
     );
   });
 
+  it("shows usage details on each profile when --usage-by-profile is enabled", async () => {
+    const localRuntime = createRuntime();
+    const originalProfiles = { ...mocks.store.profiles };
+    const originalUsageImpl = mocks.loadProviderUsageSummary.getMockImplementation();
+    mocks.store.profiles = {
+      ...mocks.store.profiles,
+      "openai-codex:work": {
+        type: "oauth",
+        provider: "openai-codex",
+        access: "eyJhbGciOi-ACCESS-WORK",
+        refresh: "oai-refresh-work",
+        expires: Date.now() + 60_000,
+      },
+    };
+    mocks.loadProviderUsageSummary.mockResolvedValue({
+      updatedAt: 0,
+      providers: [
+        {
+          provider: "openai-codex",
+          displayName: "Codex",
+          profileId: "openai-codex:default",
+          label: "openai-codex:default",
+          windows: [{ label: "3h", usedPercent: 60 }],
+        },
+        {
+          provider: "openai-codex",
+          displayName: "Codex",
+          profileId: "openai-codex:work",
+          label: "openai-codex:work",
+          windows: [{ label: "Week", usedPercent: 100 }],
+        },
+      ],
+    });
+
+    try {
+      await modelsStatusCommand({ usageByProfile: true }, localRuntime as never);
+      const output = (localRuntime.log as Mock).mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .join("\n");
+      expect(output).toContain("openai-codex:default ok");
+      expect(output).toContain("usage: 3h 40% left");
+      expect(output).toContain("openai-codex:work ok");
+      expect(output).toContain("usage: Week 0% left");
+    } finally {
+      mocks.store.profiles = originalProfiles;
+      if (originalUsageImpl) {
+        mocks.loadProviderUsageSummary.mockImplementation(originalUsageImpl);
+      } else {
+        mocks.loadProviderUsageSummary.mockResolvedValue(undefined);
+      }
+    }
+  });
+
+  it("emits usageByProfile in JSON when requested", async () => {
+    const localRuntime = createRuntime();
+    const originalUsageImpl = mocks.loadProviderUsageSummary.getMockImplementation();
+    mocks.loadProviderUsageSummary.mockResolvedValue({
+      updatedAt: 0,
+      providers: [
+        {
+          provider: "openai-codex",
+          displayName: "Codex",
+          profileId: "openai-codex:default",
+          label: "openai-codex:default",
+          windows: [{ label: "3h", usedPercent: 20 }],
+        },
+      ],
+    });
+
+    try {
+      await modelsStatusCommand({ json: true, usageByProfile: true }, localRuntime as never);
+      const payload = JSON.parse(String((localRuntime.log as Mock).mock.calls[0]?.[0]));
+      expect(payload.auth.usageByProfile).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider: "openai-codex",
+            profileId: "openai-codex:default",
+            label: "openai-codex:default",
+            summary: expect.stringContaining("3h 80% left"),
+          }),
+        ]),
+      );
+    } finally {
+      if (originalUsageImpl) {
+        mocks.loadProviderUsageSummary.mockImplementation(originalUsageImpl);
+      } else {
+        mocks.loadProviderUsageSummary.mockResolvedValue(undefined);
+      }
+    }
+  });
+
   it("throws when agent id is unknown", async () => {
     const localRuntime = createRuntime();
     await expect(modelsStatusCommand({ agent: "unknown" }, localRuntime as never)).rejects.toThrow(

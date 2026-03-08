@@ -8,6 +8,7 @@ import {
   fetchMinimaxUsage,
   fetchZaiUsage,
 } from "./provider-usage.fetch.js";
+import { buildUsageErrorSnapshot } from "./provider-usage.fetch.shared.js";
 import {
   DEFAULT_TIMEOUT_MS,
   ignoredErrors,
@@ -52,33 +53,57 @@ export async function loadProviderUsageSummary(
   const tasks = auths.map((auth) =>
     withTimeout(
       (async (): Promise<ProviderUsageSnapshot> => {
-        switch (auth.provider) {
-          case "anthropic":
-            return await fetchClaudeUsage(auth.token, timeoutMs, fetchFn);
-          case "github-copilot":
-            return await fetchCopilotUsage(auth.token, timeoutMs, fetchFn);
-          case "google-gemini-cli":
-            return await fetchGeminiUsage(auth.token, timeoutMs, fetchFn, auth.provider);
-          case "openai-codex":
-            return await fetchCodexUsage(auth.token, auth.accountId, timeoutMs, fetchFn);
-          case "minimax":
-            return await fetchMinimaxUsage(auth.token, timeoutMs, fetchFn);
-          case "xiaomi":
-            return {
-              provider: "xiaomi",
-              displayName: PROVIDER_LABELS.xiaomi,
-              windows: [],
-            };
-          case "zai":
-            return await fetchZaiUsage(auth.token, timeoutMs, fetchFn);
-          default:
-            return {
-              provider: auth.provider,
-              displayName: PROVIDER_LABELS[auth.provider],
-              windows: [],
-              error: "Unsupported provider",
-            };
+        let snapshot: ProviderUsageSnapshot;
+        try {
+          switch (auth.provider) {
+            case "anthropic":
+              snapshot = await fetchClaudeUsage(auth.token, timeoutMs, fetchFn);
+              break;
+            case "github-copilot":
+              snapshot = await fetchCopilotUsage(auth.token, timeoutMs, fetchFn);
+              break;
+            case "google-gemini-cli":
+              snapshot = await fetchGeminiUsage(auth.token, timeoutMs, fetchFn, auth.provider);
+              break;
+            case "openai-codex":
+              snapshot = await fetchCodexUsage(auth.token, auth.accountId, timeoutMs, fetchFn);
+              break;
+            case "minimax":
+              snapshot = await fetchMinimaxUsage(auth.token, timeoutMs, fetchFn);
+              break;
+            case "xiaomi":
+              snapshot = {
+                provider: "xiaomi",
+                displayName: PROVIDER_LABELS.xiaomi,
+                windows: [],
+              };
+              break;
+            case "zai":
+              snapshot = await fetchZaiUsage(auth.token, timeoutMs, fetchFn);
+              break;
+            default:
+              snapshot = {
+                provider: auth.provider,
+                displayName: PROVIDER_LABELS[auth.provider],
+                windows: [],
+                error: "Unsupported provider",
+              };
+              break;
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.name === "AbortError"
+                ? "Timeout"
+                : error.message.trim() || "Unavailable"
+              : "Unavailable";
+          snapshot = buildUsageErrorSnapshot(auth.provider, message);
         }
+        return {
+          ...snapshot,
+          profileId: auth.profileId,
+          label: auth.label,
+        };
       })(),
       timeoutMs + 1000,
       {
@@ -86,6 +111,8 @@ export async function loadProviderUsageSummary(
         displayName: PROVIDER_LABELS[auth.provider],
         windows: [],
         error: "Timeout",
+        profileId: auth.profileId,
+        label: auth.label,
       },
     ),
   );

@@ -30,8 +30,10 @@ import {
   resolveAgentModelFallbackValues,
   resolveAgentModelPrimaryValue,
 } from "../../config/model-input.js";
+import { resolveProviderAuthsByProfile } from "../../infra/provider-usage.auth.js";
 import {
   formatUsageWindowSummary,
+  type ProviderUsageSnapshot,
   loadProviderUsageSummary,
   resolveUsageProviderId,
   type UsageProviderId,
@@ -69,6 +71,7 @@ export async function modelsStatusCommand(
     probeTimeout?: string;
     probeConcurrency?: string;
     probeMaxTokens?: string;
+    usageByProfile?: boolean;
     agent?: string;
   },
   runtime: RuntimeEnv,
@@ -323,6 +326,83 @@ export async function modelsStatusCommand(
   })();
 
   if (opts.json) {
+    const usageProviders = Array.from(
+      new Set(
+        oauthProfiles
+          .map((profile) => resolveUsageProviderId(profile.provider))
+          .filter((provider): provider is UsageProviderId => Boolean(provider)),
+      ),
+    );
+    let usageByProfileJson:
+      | Array<{
+          provider: string;
+          profileId?: string;
+          label?: string;
+          displayName: string;
+          plan?: string;
+          error?: string;
+          windows: Array<{ label: string; usedPercent: number; resetAt?: number }>;
+          summary: string | null;
+        }>
+      | undefined;
+    if (opts.usageByProfile && usageProviders.length > 0) {
+      usageByProfileJson = oauthProfiles.map((profile) => ({
+        provider: profile.provider,
+        profileId: profile.profileId,
+        label: profile.label || profile.profileId,
+        displayName: profile.provider,
+        error: "Unavailable",
+        windows: [],
+        summary: null,
+      }));
+      try {
+        const usageSummary = await loadProviderUsageSummary({
+          auth: await resolveProviderAuthsByProfile({
+            providers: usageProviders,
+            agentDir,
+          }),
+          timeoutMs: 3500,
+        });
+        const snapshotsByKey = new Map(
+          usageSummary.providers.map((snapshot) => [
+            snapshot.profileId || snapshot.label || "",
+            snapshot,
+          ]),
+        );
+        usageByProfileJson = oauthProfiles.map((profile) => {
+          const snapshot =
+            snapshotsByKey.get(profile.profileId) ??
+            (profile.label ? snapshotsByKey.get(profile.label) : undefined);
+          if (!snapshot) {
+            return {
+              provider: profile.provider,
+              profileId: profile.profileId,
+              label: profile.label || profile.profileId,
+              displayName: profile.provider,
+              error: "Unavailable",
+              windows: [],
+              summary: null,
+            };
+          }
+          return {
+            provider: snapshot.provider,
+            profileId: snapshot.profileId,
+            label: snapshot.label,
+            displayName: snapshot.displayName,
+            plan: snapshot.plan,
+            error: snapshot.error,
+            windows: snapshot.windows,
+            summary: formatUsageWindowSummary(snapshot, {
+              now: Date.now(),
+              maxWindows: 2,
+              includeResets: true,
+            }),
+          };
+        });
+      } catch {
+        // Keep fallback "Unavailable" entries.
+      }
+    }
     runtime.log(
       JSON.stringify(
         {
@@ -354,6 +434,7 @@ export async function modelsStatusCommand(
             missingProvidersInUse,
             providers: providerAuth,
             unusableProfiles,
+            ...(usageByProfileJson ? { usageByProfile: usageByProfileJson } : {}),
             oauth: {
               warnAfterMs: authHealth.warnAfterMs,
               profiles: authHealth.profiles,
@@ -381,6 +462,22 @@ export async function modelsStatusCommand(
   }
 
   const rich = isRich(opts);
+  const formatUsageSuffix = (
+    snapshot?: ProviderUsageSnapshot,
+    missingState?: "unavailable" | "no data",
+  ) => {
+    if (!snapshot) {
+      return missingState ? colorize(rich, theme.muted, ` usage: ${missingState}`) : "";
+    }
+    const summary = formatUsageWindowSummary(snapshot, {
+      now: Date.now(),
+      maxWindows: 2,
+      includeResets: true,
+    });
+    const detail = summary || snapshot.error || "no data";
+    const planSuffix = snapshot.plan ? ` (${snapshot.plan})` : "";
+    return colorize(rich, theme.muted, ` usage: ${detail}${planSuffix}`);
+  };
   type ModelConfigSource = "agent" | "defaults";
   const label = (value: string) => colorize(rich, theme.accent, value.padEnd(14));
   const labelWithSource = (value: string, source?: ModelConfigSource) =>
@@ -549,6 +646,9 @@ export async function modelsStatusCommand(
     runtime.log(colorize(rich, theme.muted, "- none"));
   } else {
     const usageByProvider = new Map<string, string>();
+    const usageByProfileId = new Map<string, ProviderUsageSnapshot>();
+    const usageByProfileLabel = new Map<string, ProviderUsageSnapshot>();
+    let profileUsageFetchFailed = false;
     const usageProviders = Array.from(
       new Set(
         oauthProfiles
@@ -558,22 +658,42 @@ export async function modelsStatusCommand(
     );
     if (usageProviders.length > 0) {
       try {
-        const usageSummary = await loadProviderUsageSummary({
-          providers: usageProviders,
-          agentDir,
-          timeoutMs: 3500,
-        });
+        const usageSummary = await loadProviderUsageSummary(
+          opts.usageByProfile
+            ? {
+                auth: await resolveProviderAuthsByProfile({
+                  providers: usageProviders,
+                  agentDir,
+                }),
+                timeoutMs: 3500,
+              }
+            : {
+                providers: usageProviders,
+                agentDir,
+                timeoutMs: 3500,
+              },
+        );
         for (const snapshot of usageSummary.providers) {
-          const formatted = formatUsageWindowSummary(snapshot, {
-            now: Date.now(),
-            maxWindows: 2,
-            includeResets: true,
-          });
-          if (formatted) {
-            usageByProvider.set(snapshot.provider, formatted);
+          if (opts.usageByProfile) {
+            if (snapshot.profileId) {
+              usageByProfileId.set(snapshot.profileId, snapshot);
+            }
+            if (snapshot.label) {
+              usageByProfileLabel.set(snapshot.label, snapshot);
+            }
+          } else {
+            const formatted = formatUsageWindowSummary(snapshot, {
+              now: Date.now(),
+              maxWindows: 2,
+              includeResets: true,
+            });
+            if (formatted) {
+              usageByProvider.set(snapshot.provider, formatted);
+            }
           }
         }
       } catch {
+        profileUsageFetchFailed = opts.usageByProfile;
         // ignore usage failures
       }
     }
@@ -619,7 +739,19 @@ export async function modelsStatusCommand(
             : profile.expiresAt
               ? ` expires in ${formatRemainingShort(profile.remainingMs)}`
               : " expires unknown";
-        runtime.log(`  - ${label} ${status}${expiry}`);
+        const profileUsage = opts.usageByProfile
+          ? (usageByProfileId.get(profile.profileId) ??
+            (profile.label ? usageByProfileLabel.get(profile.label) : undefined))
+          : undefined;
+        const missingUsageState =
+          opts.usageByProfile && !profileUsage
+            ? profileUsageFetchFailed
+              ? "unavailable"
+              : "no data"
+            : undefined;
+        runtime.log(
+          `  - ${label} ${status}${expiry}${formatUsageSuffix(profileUsage, missingUsageState)}`,
+        );
       }
     }
   }

@@ -228,6 +228,7 @@ const routeModelsStatus: RouteSpec = {
     const plain = hasFlag(argv, "--plain");
     const check = hasFlag(argv, "--check");
     const probe = hasFlag(argv, "--probe");
+    const usageByProfile = hasFlag(argv, "--usage-by-profile");
     const { modelsStatusCommand } = await import("../../commands/models.js");
     await modelsStatusCommand(
       {
@@ -240,6 +241,7 @@ const routeModelsStatus: RouteSpec = {
         probeTimeout,
         probeConcurrency,
         probeMaxTokens,
+        usageByProfile,
         agent,
       },
       defaultRuntime,

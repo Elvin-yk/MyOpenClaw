@@ -6,6 +6,7 @@ import {
   ensureAuthProfileStore,
   listProfilesForProvider,
   resolveApiKeyForProfile,
+  resolveAuthProfileDisplayLabel,
   resolveAuthProfileOrder,
 } from "../agents/auth-profiles.js";
 import { isNonSecretApiKeyMarker } from "../agents/model-auth-markers.js";
@@ -20,6 +21,8 @@ export type ProviderAuth = {
   provider: UsageProviderId;
   token: string;
   accountId?: string;
+  profileId?: string;
+  label?: string;
 };
 
 function parseGoogleToken(apiKey: string): { token: string } | null {
@@ -186,6 +189,66 @@ async function resolveOAuthToken(params: {
   }
 
   return null;
+}
+
+export async function resolveProviderAuthsByProfile(params: {
+  providers: UsageProviderId[];
+  agentDir?: string;
+}): Promise<ProviderAuth[]> {
+  const cfg = loadConfig();
+  const store = ensureAuthProfileStore(params.agentDir, {
+    allowKeychainPrompt: false,
+  });
+  const auths: ProviderAuth[] = [];
+
+  for (const provider of params.providers) {
+    if (!resolveOAuthProviders(params.agentDir).includes(provider)) {
+      continue;
+    }
+    const order = dedupeProfileIds(
+      resolveAuthProfileOrder({
+        cfg,
+        store,
+        provider,
+      }),
+    );
+    for (const profileId of order) {
+      const cred = store.profiles[profileId];
+      if (!cred || (cred.type !== "oauth" && cred.type !== "token")) {
+        continue;
+      }
+      try {
+        const resolved = await resolveApiKeyForProfile({
+          cfg: undefined,
+          store,
+          profileId,
+          agentDir: params.agentDir,
+        });
+        if (!resolved) {
+          continue;
+        }
+        let token = resolved.apiKey;
+        if (provider === "google-gemini-cli") {
+          const parsed = parseGoogleToken(resolved.apiKey);
+          token = parsed?.token ?? resolved.apiKey;
+        }
+        auths.push({
+          provider,
+          token,
+          accountId:
+            cred.type === "oauth" && "accountId" in cred
+              ? (cred as { accountId?: string }).accountId
+              : undefined,
+          profileId,
+          label: resolveAuthProfileDisplayLabel({ cfg, store, profileId }),
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return auths;
 }
 
 function resolveOAuthProviders(agentDir?: string): UsageProviderId[] {
