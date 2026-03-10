@@ -21,7 +21,7 @@ import {
   writeCache,
 } from "./web-shared.js";
 
-const SEARCH_PROVIDERS = ["brave", "perplexity", "grok", "gemini", "kimi"] as const;
+const SEARCH_PROVIDERS = ["brave", "gemini", "grok", "kimi", "perplexity"] as const;
 const DEFAULT_SEARCH_COUNT = 5;
 const MAX_SEARCH_COUNT = 10;
 
@@ -272,8 +272,7 @@ type BraveSearchResponse = {
   };
 };
 
-type BraveLlmContextSnippet = { text: string };
-type BraveLlmContextResult = { url: string; title: string; snippets: BraveLlmContextSnippet[] };
+type BraveLlmContextResult = { url: string; title: string; snippets: string[] };
 type BraveLlmContextResponse = {
   grounding: { generic?: BraveLlmContextResult[] };
   sources?: { url?: string; hostname?: string; date?: string }[];
@@ -492,19 +491,10 @@ function resolveSearchApiKey(search?: WebSearchConfig): string | undefined {
 }
 
 function missingSearchKeyPayload(provider: (typeof SEARCH_PROVIDERS)[number]) {
-  if (provider === "perplexity") {
+  if (provider === "brave") {
     return {
-      error: "missing_perplexity_api_key",
-      message:
-        "web_search (perplexity) needs an API key. Set PERPLEXITY_API_KEY or OPENROUTER_API_KEY in the Gateway environment, or configure tools.web.search.perplexity.apiKey.",
-      docs: "https://docs.openclaw.ai/tools/web",
-    };
-  }
-  if (provider === "grok") {
-    return {
-      error: "missing_xai_api_key",
-      message:
-        "web_search (grok) needs an xAI API key. Set XAI_API_KEY in the Gateway environment, or configure tools.web.search.grok.apiKey.",
+      error: "missing_brave_api_key",
+      message: `web_search (brave) needs a Brave Search API key. Run \`${formatCliCommand("openclaw configure --section web")}\` to store it, or set BRAVE_API_KEY in the Gateway environment.`,
       docs: "https://docs.openclaw.ai/tools/web",
     };
   }
@@ -513,6 +503,14 @@ function missingSearchKeyPayload(provider: (typeof SEARCH_PROVIDERS)[number]) {
       error: "missing_gemini_api_key",
       message:
         "web_search (gemini) needs an API key. Set GEMINI_API_KEY in the Gateway environment, or configure tools.web.search.gemini.apiKey.",
+      docs: "https://docs.openclaw.ai/tools/web",
+    };
+  }
+  if (provider === "grok") {
+    return {
+      error: "missing_xai_api_key",
+      message:
+        "web_search (grok) needs an xAI API key. Set XAI_API_KEY in the Gateway environment, or configure tools.web.search.grok.apiKey.",
       docs: "https://docs.openclaw.ai/tools/web",
     };
   }
@@ -525,8 +523,9 @@ function missingSearchKeyPayload(provider: (typeof SEARCH_PROVIDERS)[number]) {
     };
   }
   return {
-    error: "missing_brave_api_key",
-    message: `web_search needs a Brave Search API key. Run \`${formatCliCommand("openclaw configure --section web")}\` to store it, or set BRAVE_API_KEY in the Gateway environment.`,
+    error: "missing_perplexity_api_key",
+    message:
+      "web_search (perplexity) needs an API key. Set PERPLEXITY_API_KEY or OPENROUTER_API_KEY in the Gateway environment, or configure tools.web.search.perplexity.apiKey.",
     docs: "https://docs.openclaw.ai/tools/web",
   };
 }
@@ -536,32 +535,32 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
     search && "provider" in search && typeof search.provider === "string"
       ? search.provider.trim().toLowerCase()
       : "";
-  if (raw === "perplexity") {
-    return "perplexity";
-  }
-  if (raw === "grok") {
-    return "grok";
+  if (raw === "brave") {
+    return "brave";
   }
   if (raw === "gemini") {
     return "gemini";
   }
+  if (raw === "grok") {
+    return "grok";
+  }
   if (raw === "kimi") {
     return "kimi";
   }
-  if (raw === "brave") {
-    return "brave";
+  if (raw === "perplexity") {
+    return "perplexity";
   }
 
-  // Auto-detect provider from available API keys (priority order)
+  // Auto-detect provider from available API keys (alphabetical order)
   if (raw === "") {
-    // 1. Brave
+    // Brave
     if (resolveSearchApiKey(search)) {
       logVerbose(
         'web_search: no provider configured, auto-detected "brave" from available API keys',
       );
       return "brave";
     }
-    // 2. Gemini
+    // Gemini
     const geminiConfig = resolveGeminiConfig(search);
     if (resolveGeminiApiKey(geminiConfig)) {
       logVerbose(
@@ -569,7 +568,15 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
       );
       return "gemini";
     }
-    // 3. Kimi
+    // Grok
+    const grokConfig = resolveGrokConfig(search);
+    if (resolveGrokApiKey(grokConfig)) {
+      logVerbose(
+        'web_search: no provider configured, auto-detected "grok" from available API keys',
+      );
+      return "grok";
+    }
+    // Kimi
     const kimiConfig = resolveKimiConfig(search);
     if (resolveKimiApiKey(kimiConfig)) {
       logVerbose(
@@ -577,7 +584,7 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
       );
       return "kimi";
     }
-    // 4. Perplexity
+    // Perplexity
     const perplexityConfig = resolvePerplexityConfig(search);
     const { apiKey: perplexityKey } = resolvePerplexityApiKey(perplexityConfig);
     if (perplexityKey) {
@@ -585,14 +592,6 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
         'web_search: no provider configured, auto-detected "perplexity" from available API keys',
       );
       return "perplexity";
-    }
-    // 5. Grok
-    const grokConfig = resolveGrokConfig(search);
-    if (resolveGrokApiKey(grokConfig)) {
-      logVerbose(
-        'web_search: no provider configured, auto-detected "grok" from available API keys',
-      );
-      return "grok";
     }
   }
 
@@ -667,8 +666,8 @@ function inferPerplexityBaseUrlFromApiKey(apiKey?: string): PerplexityBaseUrlHin
 
 function resolvePerplexityBaseUrl(
   perplexity?: PerplexityConfig,
-  apiKeySource: PerplexityApiKeySource = "none",
-  apiKey?: string,
+  authSource: PerplexityApiKeySource = "none", // pragma: allowlist secret
+  configuredKey?: string,
 ): string {
   const fromConfig =
     perplexity && "baseUrl" in perplexity && typeof perplexity.baseUrl === "string"
@@ -677,14 +676,14 @@ function resolvePerplexityBaseUrl(
   if (fromConfig) {
     return fromConfig;
   }
-  if (apiKeySource === "perplexity_env") {
+  if (authSource === "perplexity_env") {
     return PERPLEXITY_DIRECT_BASE_URL;
   }
-  if (apiKeySource === "openrouter_env") {
+  if (authSource === "openrouter_env") {
     return DEFAULT_PERPLEXITY_BASE_URL;
   }
-  if (apiKeySource === "config") {
-    const inferred = inferPerplexityBaseUrlFromApiKey(apiKey);
+  if (authSource === "config") {
+    const inferred = inferPerplexityBaseUrlFromApiKey(configuredKey);
     if (inferred === "openrouter") {
       return DEFAULT_PERPLEXITY_BASE_URL;
     }
@@ -1429,6 +1428,18 @@ async function runKimiSearch(params: {
   };
 }
 
+function mapBraveLlmContextResults(
+  data: BraveLlmContextResponse,
+): { url: string; title: string; snippets: string[]; siteName?: string }[] {
+  const genericResults = Array.isArray(data.grounding?.generic) ? data.grounding.generic : [];
+  return genericResults.map((entry) => ({
+    url: entry.url ?? "",
+    title: entry.title ?? "",
+    snippets: (entry.snippets ?? []).filter((s) => typeof s === "string" && s.length > 0),
+    siteName: resolveSiteName(entry.url) || undefined,
+  }));
+}
+
 async function runBraveLlmContextSearch(params: {
   query: string;
   apiKey: string;
@@ -1477,13 +1488,7 @@ async function runBraveLlmContextSearch(params: {
       }
 
       const data = (await res.json()) as BraveLlmContextResponse;
-      const genericResults = Array.isArray(data.grounding?.generic) ? data.grounding.generic : [];
-      const mapped = genericResults.map((entry) => ({
-        url: entry.url ?? "",
-        title: entry.title ?? "",
-        snippets: (entry.snippets ?? []).map((s) => s.text ?? "").filter(Boolean),
-        siteName: resolveSiteName(entry.url) || undefined,
-      }));
+      const mapped = mapBraveLlmContextResults(data);
 
       return { results: mapped, sources: data.sources };
     },
@@ -2122,4 +2127,5 @@ export const __testing = {
   extractKimiCitations,
   resolveRedirectUrl: resolveCitationRedirectUrl,
   resolveBraveMode,
+  mapBraveLlmContextResults,
 } as const;
