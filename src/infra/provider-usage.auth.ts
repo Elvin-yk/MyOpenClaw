@@ -10,7 +10,7 @@ import {
   resolveAuthProfileOrder,
 } from "../agents/auth-profiles.js";
 import { isNonSecretApiKeyMarker } from "../agents/model-auth-markers.js";
-import { getCustomProviderApiKey } from "../agents/model-auth.js";
+import { resolveUsableCustomProviderApiKey } from "../agents/model-auth.js";
 import { normalizeProviderId } from "../agents/model-selection.js";
 import { loadConfig } from "../config/config.js";
 import { normalizeSecretInput } from "../utils/normalize-secret-input.js";
@@ -45,7 +45,9 @@ function resolveZaiApiKey(): string | undefined {
   }
 
   const cfg = loadConfig();
-  const key = getCustomProviderApiKey(cfg, "zai") || getCustomProviderApiKey(cfg, "z-ai");
+  const key =
+    resolveUsableCustomProviderApiKey({ cfg, provider: "zai" })?.apiKey ??
+    resolveUsableCustomProviderApiKey({ cfg, provider: "z-ai" })?.apiKey;
   if (key) {
     return key;
   }
@@ -106,8 +108,11 @@ function resolveProviderApiKeyFromConfigAndStore(params: {
   }
 
   const cfg = loadConfig();
-  const key = getCustomProviderApiKey(cfg, params.providerId);
-  if (key && !isNonSecretApiKeyMarker(key)) {
+  const key = resolveUsableCustomProviderApiKey({
+    cfg,
+    provider: params.providerId,
+  })?.apiKey;
+  if (key) {
     return key;
   }
 
