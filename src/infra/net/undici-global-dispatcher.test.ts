@@ -9,6 +9,7 @@ const {
   setCurrentDispatcher,
   getCurrentDispatcher,
   getDefaultAutoSelectFamily,
+  mockHasProxyEnvConfigured,
 } = vi.hoisted(() => {
   class Agent {
     constructor(public readonly options?: Record<string, unknown>) {}
@@ -33,6 +34,7 @@ const {
   };
   const getCurrentDispatcher = () => currentDispatcher;
   const getDefaultAutoSelectFamily = vi.fn(() => undefined as boolean | undefined);
+  const mockHasProxyEnvConfigured = vi.fn(() => false);
 
   return {
     Agent,
@@ -43,6 +45,7 @@ const {
     setCurrentDispatcher,
     getCurrentDispatcher,
     getDefaultAutoSelectFamily,
+    mockHasProxyEnvConfigured,
   };
 });
 
@@ -59,14 +62,15 @@ vi.mock("node:net", () => ({
 
 vi.mock("./proxy-env.js", () => ({
   hasEnvHttpProxyConfigured: vi.fn(() => false),
+  hasProxyEnvConfigured: mockHasProxyEnvConfigured,
 }));
-
 import { hasEnvHttpProxyConfigured } from "./proxy-env.js";
 import {
   DEFAULT_UNDICI_STREAM_TIMEOUT_MS,
   ensureGlobalUndiciEnvProxyDispatcher,
   ensureGlobalUndiciStreamTimeouts,
   resetGlobalUndiciStreamTimeoutsForTests,
+  withTemporaryEnvProxyGlobalDispatcher,
 } from "./undici-global-dispatcher.js";
 
 describe("ensureGlobalUndiciStreamTimeouts", () => {
@@ -76,6 +80,7 @@ describe("ensureGlobalUndiciStreamTimeouts", () => {
     setCurrentDispatcher(new Agent());
     getDefaultAutoSelectFamily.mockReturnValue(undefined);
     vi.mocked(hasEnvHttpProxyConfigured).mockReturnValue(false);
+    mockHasProxyEnvConfigured.mockReturnValue(false);
   });
 
   it("replaces default Agent dispatcher with extended stream timeouts", () => {
@@ -141,6 +146,52 @@ describe("ensureGlobalUndiciStreamTimeouts", () => {
       autoSelectFamily: false,
       autoSelectFamilyAttemptTimeout: 300,
     });
+  });
+
+  it("does not install a temporary proxy dispatcher when no proxy env is configured", async () => {
+    const original = getCurrentDispatcher();
+    const result = await withTemporaryEnvProxyGlobalDispatcher(async () => "ok");
+
+    expect(result).toBe("ok");
+    expect(setGlobalDispatcher).not.toHaveBeenCalled();
+    expect(getCurrentDispatcher()).toBe(original);
+  });
+
+  it("temporarily installs EnvHttpProxyAgent and restores the previous dispatcher", async () => {
+    mockHasProxyEnvConfigured.mockReturnValue(true);
+    getDefaultAutoSelectFamily.mockReturnValue(true);
+    const previous = new Agent({ previous: true });
+    setCurrentDispatcher(previous);
+
+    let dispatcherInside: unknown;
+    const result = await withTemporaryEnvProxyGlobalDispatcher(async () => {
+      dispatcherInside = getCurrentDispatcher();
+      return "ok";
+    });
+
+    expect(result).toBe("ok");
+    expect(dispatcherInside).toBeInstanceOf(EnvHttpProxyAgent);
+    expect((dispatcherInside as { options?: Record<string, unknown> }).options?.connect).toEqual({
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: 300,
+    });
+    expect(getCurrentDispatcher()).toBe(previous);
+    expect(setGlobalDispatcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the previous dispatcher when the wrapped call throws", async () => {
+    mockHasProxyEnvConfigured.mockReturnValue(true);
+    const previous = new Agent({ previous: true });
+    setCurrentDispatcher(previous);
+
+    await expect(
+      withTemporaryEnvProxyGlobalDispatcher(async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+
+    expect(getCurrentDispatcher()).toBe(previous);
+    expect(setGlobalDispatcher).toHaveBeenCalledTimes(2);
   });
 });
 
