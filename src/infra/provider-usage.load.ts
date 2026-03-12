@@ -1,4 +1,5 @@
 import { resolveFetch } from "./fetch.js";
+import { withTemporaryEnvProxyGlobalDispatcher } from "./net/undici-global-dispatcher.js";
 import { type ProviderAuth, resolveProviderAuths } from "./provider-usage.auth.js";
 import {
   fetchClaudeUsage,
@@ -50,8 +51,8 @@ export async function loadProviderUsageSummary(
     return { updatedAt: now, providers: [] };
   }
 
-  const tasks = auths.map((auth) =>
-    withTimeout(
+  const runUsageTask = async (auth: ProviderAuth): Promise<ProviderUsageSnapshot> =>
+    await withTimeout(
       (async (): Promise<ProviderUsageSnapshot> => {
         let snapshot: ProviderUsageSnapshot;
         try {
@@ -114,10 +115,12 @@ export async function loadProviderUsageSummary(
         profileId: auth.profileId,
         label: auth.label,
       },
-    ),
-  );
+    );
 
-  const snapshots = await Promise.all(tasks);
+  const snapshots = await withTemporaryEnvProxyGlobalDispatcher(
+    async () => await Promise.all(auths.map((auth) => runUsageTask(auth))),
+    { timeoutMs: timeoutMs + 1000 },
+  );
   const providers = snapshots.filter((entry) => {
     if (entry.windows.length > 0) {
       return true;
